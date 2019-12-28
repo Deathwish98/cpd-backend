@@ -9,8 +9,9 @@ const checkIfAuthenticated = require('../middlewares/checkIfAuthenticated');
 const dbClient = require('../app/db-manager');
 
 router.get('/', (req, res) => {
-    console.log(req.query.id);
+    console.log(req.query.id, req.query.type);
     let path;
+    let projectionVar;
     dbClient.client.connect((err, client) => {
         console.log("Connected to database");
 
@@ -18,20 +19,38 @@ router.get('/', (req, res) => {
         console.log("Switched to database cpd");
 
         db.collection('videos', (err, collection) => {
+            switch (req.query.type) {
+                case 'protan-0':
+                case 'protan-1':
+                case 'protan-2':
+                    projectionVar = {protan_path: 1, _id: 0};
+                    break;
+                case 'deutan-0':
+                case 'deutan-1':
+                case 'deutan-2':
+                    projectionVar = {deutan_path: 1, _id: 0};
+                    break;
+                case 'tritan-0':
+                    projectionVar = {tritan_path: 1, _id: 0};
+                    break;
+                default:
+                    // debugger;
+                    projectionVar = {path: 1, _id: 0};
+            }
             collection.findOne({
                 _id: ObjectId(req.query.id),
             }, {
-                projection: {path: 1, _id: 0}
+                projection: projectionVar
             }).then((vid_path) => {
-                // console.log(vid_path);
-                path = vid_path.path;
+                path = vid_path[Object.keys(vid_path)[0]];
+                console.log(path);
                 const stat = fs.statSync(path);
                 const fileSize = stat.size;
                 const range = req.headers.range;
-
                 if (range) {
                     const parts = range.replace(/bytes=/, "").split("-");
                     const start = parseInt(parts[0], 10);
+                    console.log(parts, start, range, fileSize);
                     const end = parts[1]
                         ? parseInt(parts[1], 10)
                         : fileSize-1;
@@ -47,6 +66,11 @@ router.get('/', (req, res) => {
 
                     res.writeHead(206, head);
                     file.pipe(res);
+                    setTimeout(() => {file.destroy()}, 2000);
+                    // file.destroy();
+
+                    // file.destroy();
+                    // res.end();
                 } else {
                     const head = {
                         'Content-Length': fileSize,
@@ -69,6 +93,8 @@ router.get('/', (req, res) => {
 
 
 router.post('/new', checkIfAuthenticated, (req, res) => {
+    let uploadedFile;
+
     console.log(req.user);
     new formidable.IncomingForm().parse(req)
         .on('fileBegin', (name, file) => {
@@ -78,6 +104,8 @@ router.post('/new', checkIfAuthenticated, (req, res) => {
             console.log('Field', name, field);
         })
         .on('file', (name, file) => {
+            console.log(file, __dirname);
+            uploadedFile = file;
             // console.log('Uploaded file', name, file);
             dbClient.client.connect((err, client) => {
                 console.log("Connected to database");
@@ -94,22 +122,19 @@ router.post('/new', checkIfAuthenticated, (req, res) => {
                         , file.name]
                 );
                 let output = "";
-                python.stdout.on('data', function(data){ output += data });
+                python.stdout.on('data', function (data) {
+                    output += data;
+                    console.log(output);
+                });
                 python.on('close', (code) => {
-                    if (code !== 0) {
-                        res.status(500).json({
-                            result: false,
-                            message: 'File list not retrieved successfully'
-                        });
-                    }
-
                     db.collection('videos').insertOne({
                         path: file.path,
                         user_id: req.user.sub,
                         thumbnail_name: output.trim()
                     }).then((result) => {
                         // console.log(file);
-
+                        console.log(result.insertedId);
+                        uploadedFile._id = result.insertedId;
                         client.close().then(() => {
                             console.log("Closed Connection to database",);
                         }, () => {
@@ -118,7 +143,7 @@ router.post('/new', checkIfAuthenticated, (req, res) => {
 
                         res.status(200).json({
                             result: true,
-                            message: 'File list retrieved successfully',
+                            message: 'File Uploaded successfully',
                             // something: output
                         });
                     });
@@ -135,15 +160,58 @@ router.post('/new', checkIfAuthenticated, (req, res) => {
             throw err;
         })
         .on('end', () => {
+            dbClient.client.connect((err, client) => {
+                console.log("Connected to database");
 
-            // res.json({
-            //     result: true,
-            //     message: 'File Uploaded Successfully'
-            // });
-        })
+                const db = client.db("cpd");
+                console.log("Switched to database cpd");
+
+                const python = require('child_process').spawn(
+                    'python',
+                    // second argument is array of parameters, e.g.:
+                    [path.join(__dirname, '../utils/hex-changer.py')
+                        , path.join(__dirname, '../assets', uploadedFile.name)
+                        , "Protan,Deutan,Tritan"]
+                );
+                let output = "";
+                let filepaths = [];
+                python.stdout.on('data', function (data) {
+                    output += data;
+                    filepaths = output.split(',');
+                    console.log(filepaths);
+                });
+                python.on('close', (code) => {
+                    console.log(uploadedFile);
+                    // let foundVideo = db.collection('videos').find({
+                    //     // path: uploadedFile.path,
+                    //     _id: ObjectId(uploadedFile._id),
+                    //     user_id: req.user.sub
+                    // }).toArray();
+                    // foundVideo.then((result) => {
+                    //     console.log(result);
+                    // });
+                    db.collection('videos').updateOne(
+                        { _id: ObjectId(uploadedFile._id) },
+                        { $set: { protan_path: filepaths[0], deutan_path: filepaths[1], tritan_path: filepaths[2] }
+                        })
+                        .then(function(result) {
+                            // process result
+                        })
+
+
+                });
+
+
+                // res.json({
+                //     result: true,
+                //     message: 'File Uploaded Successfully'
+                // });
+            })
+        });
 });
 
 router.get('/all', checkIfAuthenticated, (req, res) => {
+
     dbClient.client.connect((err, client) => {
         console.log("Connected to database");
 
@@ -153,7 +221,7 @@ router.get('/all', checkIfAuthenticated, (req, res) => {
         db.collection('users', (err, collection) => {
             collection.findOne({
                 _id: ObjectId(req.user.sub),
-            },{
+            }, {
                 projection: {_id: 1}
             }).then((userId) => {
                 if (!userId) {
@@ -188,6 +256,7 @@ router.get('/all', checkIfAuthenticated, (req, res) => {
                             });
                         })
                     });
+
                 }
 
             });

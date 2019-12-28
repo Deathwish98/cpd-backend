@@ -38,6 +38,6 @@ def main(in_vid, in_thumb):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python {} video.ext".format(__name__))
+        print("Usage: python {} video.ext thumb.ext".format(__name__))
     else:
         main(sys.argv[1], sys.argv[2])
